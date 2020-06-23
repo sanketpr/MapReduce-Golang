@@ -1,18 +1,43 @@
 package mr
 
+import "fmt"
 import "log"
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
+import "io/ioutil"
 
+
+type WorkerInfo struct {
+	address string
+}
+
+var Files []string
+
+type MRData struct {
+	mapperInput map[string]string
+	// intermData map[string] int
+	// reducerOutput map[string] int
+}
 
 type Master struct {
-	// Your definitions here.
-
+	listener net.Listener
+	isAlive bool
+	workers map[string] *WorkerInfo
+	address string
 }
 
 // Your code here -- RPC handlers for the worker to call.
+
+
+type Listener int
+
+type Reply struct {
+   Data map[string]string
+}
+
+
 
 //
 // an example RPC handler.
@@ -41,6 +66,73 @@ func (m *Master) server() {
 	go http.Serve(l, nil)
 }
 
+func rpcServer() {
+	address, err := net.ResolveTCPAddr("tcp", "0.0.0.0:12345")
+
+	if err != nil {
+	 log.Fatal(err)
+	}
+
+	inbound, err := net.ListenTCP("tcp", address)
+
+	if err != nil {
+	 log.Fatal(err)
+	}
+
+	listener := new(Listener)
+	rpc.Register(listener)
+	rpc.Accept(inbound)
+}
+
+func (l *Listener) GetLine(line string, reply *Reply) error {
+	mapperInput := make(map[string]string)
+	
+	for _, filename := range Files {
+		file, err := os.Open(filename)
+		fmt.Printf("%s\n",filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		mapperInput[filename] = string(content)
+		fmt.Printf("%s %s\n\n\n*****\n\n\n",filename,string(content))
+	}
+
+	*reply = Reply{mapperInput}
+
+
+	return nil
+}
+
+func (l *Listener) GetData(line string, mrData *MRData) error {
+	// mrData = new(MRData)
+	mapperInput := make(map[string]string)
+	rv := line
+   	fmt.Printf("Receive: %v\n", rv)
+
+	for _, filename := range Files {
+		file, err := os.Open(filename)
+		fmt.Printf("%s\n",filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		mapperInput[filename] = string(content)
+	}
+
+	*mrData = MRData{mapperInput}
+
+	return nil
+}
+
 //
 // main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
@@ -54,6 +146,19 @@ func (m *Master) Done() bool {
 	return ret
 }
 
+func distributeMapJob(file_contents map[int]string) {
+	fmt.Print("Distribution Center\n")
+}
+
+
+// func initaliseMaster() *Master {
+// 	m := new(Master)
+// 	m.address = ""
+// 	m.isAlive = true
+
+// 	return &m
+// }
+
 //
 // create a Master.
 // main/mrmaster.go calls this function.
@@ -61,10 +166,7 @@ func (m *Master) Done() bool {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
-
-	// Your code here.
-
-
-	m.server()
+	Files = files
+	rpcServer()
 	return &m
 }

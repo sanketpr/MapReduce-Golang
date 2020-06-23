@@ -4,7 +4,12 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "sort"
 
+const(
+	Mapper = "Mapper"
+	Reducer = "Reducer"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -13,6 +18,21 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type WorkerDetails struct {
+	isAlive bool
+	address string
+	workerType string
+}
+
+
+type ByKey []KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -25,17 +45,73 @@ func ihash(key string) int {
 }
 
 
+func rpcClient(c chan string) {
+	client, err := rpc.Dial("tcp", "localhost:12345")
+	if err != nil {
+	  log.Fatal(err)
+	}
+
+	l := string("Test String")
+	
+	var mrData Reply
+	err = client.Call("Listener.GetLine", l, &mrData)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	someFlag := 0
+
+	for k, v := range mrData.Data {
+		if(someFlag == 0) {
+			someFlag = 1
+			c <- k
+			c <- v
+			break
+		}
+	}
+}
+
+
+func mapOperation(mapf func(string, string) []KeyValue, c chan string) []KeyValue {
+	key, value := <-c, <-c
+	kva := mapf(key, value)
+
+	return kva
+}
+
+func reduceOperation(reducef func(string, []string) string, intermediate []KeyValue) {
+	i := 0
+	for i < len(intermediate) {
+		j := i + 1
+		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediate[k].Value)
+		}
+		output := reducef(intermediate[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Printf("%v %v\n", intermediate[i].Key, output)
+
+		i = j
+	}
+}
+
 //
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+		fmt.Printf("Worker Running...\n")
+		c := make(chan string)
+		go rpcClient(c)
+		interm := mapOperation(mapf,c)
 
-	// Your worker implementation here.
-
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
-
+		sort.Sort(ByKey(interm))
+		reduceOperation(reducef,interm)
 }
 
 //
