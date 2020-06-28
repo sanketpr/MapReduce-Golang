@@ -26,6 +26,7 @@ type Master struct {
 	isAlive bool
 	workers map[string] *WorkerInfo
 	address string
+	mapperChannel chan KeyValue
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -89,7 +90,6 @@ func (l *Listener) GetLine(line string, reply *Reply) error {
 	
 	for _, filename := range Files {
 		file, err := os.Open(filename)
-		fmt.Printf("%s\n",filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
 		}
@@ -99,11 +99,9 @@ func (l *Listener) GetLine(line string, reply *Reply) error {
 		}
 		file.Close()
 		mapperInput[filename] = string(content)
-		fmt.Printf("%s %s\n\n\n*****\n\n\n",filename,string(content))
 	}
 
 	*reply = Reply{mapperInput}
-
 
 	return nil
 }
@@ -111,12 +109,8 @@ func (l *Listener) GetLine(line string, reply *Reply) error {
 func (l *Listener) GetData(line string, mrData *MRData) error {
 	// mrData = new(MRData)
 	mapperInput := make(map[string]string)
-	rv := line
-   	fmt.Printf("Receive: %v\n", rv)
-
 	for _, filename := range Files {
 		file, err := os.Open(filename)
-		fmt.Printf("%s\n",filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
 		}
@@ -166,6 +160,7 @@ func distributeMapJob(file_contents map[int]string) {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	m := Master{}
+	m.mapperChannel = make(chan KeyValue)
 	Files = files
 	rpcServer()
 	return &m

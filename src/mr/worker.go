@@ -5,6 +5,8 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 import "sort"
+import "sync"
+import "os"
 
 const(
 	Mapper = "Mapper"
@@ -45,7 +47,7 @@ func ihash(key string) int {
 }
 
 
-func rpcClient(c chan string) {
+func rpcClient(c chan KeyValue) {
 	client, err := rpc.Dial("tcp", "localhost:12345")
 	if err != nil {
 	  log.Fatal(err)
@@ -60,28 +62,38 @@ func rpcClient(c chan string) {
 		log.Fatal(err)
 	}
 
-	someFlag := 0
-
 	for k, v := range mrData.Data {
-		if(someFlag == 0) {
-			someFlag = 1
-			c <- k
-			c <- v
-			break
-		}
+		c <- KeyValue{k,v}
 	}
+
+	close(c)
 }
 
 
-func mapOperation(mapf func(string, string) []KeyValue, c chan string) []KeyValue {
-	key, value := <-c, <-c
-	kva := mapf(key, value)
+func mapOperation(mapf func(string, string) []KeyValue, c chan KeyValue) []KeyValue {
+	kva := make([]KeyValue,9)
+	var done sync.WaitGroup
 
+	for keyVal := range c{
+		done.Add(1)
+		go func(keyValue KeyValue) {
+			temp := mapf(keyVal.Key, keyVal.Value)
+			kva = append(kva,temp...)
+			done.Done()
+		}(keyVal)
+	}
+
+	done.Wait()
 	return kva
 }
 
-func reduceOperation(reducef func(string, []string) string, intermediate []KeyValue) {
+func reduceOperation(reducef func(string, []string) string, intermediate []KeyValue) []KeyValue {
 	i := 0
+
+	keys := []string{}
+	vals := [][]string{}
+
+
 	for i < len(intermediate) {
 		j := i + 1
 		for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
@@ -91,13 +103,27 @@ func reduceOperation(reducef func(string, []string) string, intermediate []KeyVa
 		for k := i; k < j; k++ {
 			values = append(values, intermediate[k].Value)
 		}
-		output := reducef(intermediate[i].Key, values)
-
-		// this is the correct format for each line of Reduce output.
-		fmt.Printf("%v %v\n", intermediate[i].Key, output)
+		keys = append(keys,intermediate[i].Key)
+		vals = append(vals, values)
 
 		i = j
 	}
+
+
+	final_output := []KeyValue{}
+	var done sync.WaitGroup
+
+	for k := 0; k < len(keys); k++ {
+		done.Add(1)
+		go func(key string, values []string) {
+			output := reducef(key, values)
+			kv_output := KeyValue{key,output}
+			final_output = append(final_output,kv_output)
+			done.Done()
+		}(keys[k], vals[k])
+	}
+	done.Wait()
+	return final_output
 }
 
 //
@@ -106,12 +132,25 @@ func reduceOperation(reducef func(string, []string) string, intermediate []KeyVa
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 		fmt.Printf("Worker Running...\n")
-		c := make(chan string)
+		c := make(chan KeyValue)
 		go rpcClient(c)
 		interm := mapOperation(mapf,c)
 
 		sort.Sort(ByKey(interm))
-		reduceOperation(reducef,interm)
+		final_output := reduceOperation(reducef,interm)
+
+		sort.Sort(ByKey(final_output))
+
+		oname := "mr-out-0"
+		ofile, _ := os.Create(oname)
+
+
+		for _,kv := range final_output {
+			fmt.Printf("%s   -   %s\n",kv.Key,kv.Value)
+			fmt.Fprintf(ofile, "%v %v\n", kv.Key, kv.Value)
+		}
+
+		ofile.Close()
 }
 
 //
