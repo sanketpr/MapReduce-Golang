@@ -4,9 +4,10 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
-import "sort"
+// import "sort"
 import "sync"
-import "os"
+// import "os"
+import "net"
 
 const(
 	Mapper = "Mapper"
@@ -21,12 +22,17 @@ type KeyValue struct {
 	Value string
 }
 
-type WorkerDetails struct {
-	isAlive bool
-	address string
-	workerType string
+type WorkerConfig struct {
+//	isAlive bool
+	Address string
+	WorkerType string
+	DataChunck KeyValue
 }
 
+type Job struct {
+	NMappers int
+	NReducers int
+}
 
 type ByKey []KeyValue
 
@@ -68,7 +74,6 @@ func rpcClient(c chan KeyValue) {
 
 	close(c)
 }
-
 
 func mapOperation(mapf func(string, string) []KeyValue, c chan KeyValue) []KeyValue {
 	kva := make([]KeyValue,9)
@@ -131,26 +136,38 @@ func reduceOperation(reducef func(string, []string) string, intermediate []KeyVa
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
-		fmt.Printf("Worker Running...\n")
-		c := make(chan KeyValue)
-		go rpcClient(c)
-		interm := mapOperation(mapf,c)
+		// fmt.Printf("Worker Running...\n")
+		// c := make(chan KeyValue)
+		// go rpcClient(c)
 
-		sort.Sort(ByKey(interm))
-		final_output := reduceOperation(reducef,interm)
+		spawnChannel := make(chan int)
 
-		sort.Sort(ByKey(final_output))
-
-		oname := "mr-out-0"
-		ofile, _ := os.Create(oname)
+		go StartRPCClient(spawnChannel)
+		SpawnWorker(spawnChannel, Mapper)
 
 
-		for _,kv := range final_output {
-			fmt.Printf("%s   -   %s\n",kv.Key,kv.Value)
-			fmt.Fprintf(ofile, "%v %v\n", kv.Key, kv.Value)
-		}
+		// interm := mapOperation(mapf,c)
 
-		ofile.Close()
+		// sort.Sort(ByKey(interm))
+		// final_output := reduceOperation(reducef,interm)
+
+		// sort.Sort(ByKey(final_output))
+
+		// wk := new(WorkerConfig)
+		// wk.address = "0.0.0.0:11444"
+		// wk.workerType = Mapper
+		// StartWorkerRPCServer(wk)
+		
+		// oname := "mr-out-0"
+		// ofile, _ := os.Create(oname)
+
+
+		// for _,kv := range final_output {
+		// 	fmt.Printf("%s   -   %s\n",kv.Key,kv.Value)
+		// 	fmt.Fprintf(ofile, "%v %v\n", kv.Key, kv.Value)
+		// }
+
+		// ofile.Close()
 }
 
 //
@@ -197,4 +214,141 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+/*
+RPC Implementation
+---------------------------------------------------------------------------------------------------------------------
+*/
+
+func StartRPCClient(spawnChannel chan int) {
+	fmt.Print("\nInitating connection with master\n")
+	client, err := rpc.Dial("tcp", "0.0.0.0:12345")
+	if err != nil {
+	  log.Fatal(err)
+	}
+
+	l := string("Test String")
+	job := new(Job)
+	// job.nMappers = 0
+	// job.nReducers = 0
+
+	err = client.Call("Master.EstConnection", l, &job)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("\nPusblising on mapper spawn channel\n")
+	spawnChannel <- job.NMappers
+	close(spawnChannel)
+}
+
+func ListenToSpawnNewWorker(spawnChannel chan int) {
+	fmt.Print("\nWaiting for a signal to create new worker...\n")
+	// for c := range spawnChannel {
+	// 	if(c) {
+	// 		fmt.Print("\nHearback, master wants new worker\n")
+	// 	} else {
+	// 		fmt.Print("\nHearback, master DOES NOT want new worker\n")	
+	// 	}
+	// }
+	fmt.Print("\nDone Waiting...\n")
+}
+
+func StartWorkerRPCServer(wk *WorkerConfig) {
+	fmt.Print("\nStarting Worker Server...\n")
+	address, err := net.ResolveTCPAddr("tcp", wk.Address)
+
+	if err != nil {
+	 log.Fatal(err)
+	}
+
+	inbound, err := net.ListenTCP("tcp", address)
+
+	if err != nil {
+	 log.Fatal(err)
+	}
+
+	rpc.Register(wk)
+	rpc.Accept(inbound)	
+}
+
+func (wk *WorkerConfig) RegisterWithMaster() {
+	client, err := rpc.Dial("tcp", "localhost:12345")
+	if err != nil {
+	  log.Fatal(err)
+	}
+
+	// msg := string("Message")
+	fmt.Printf("\nRegistering with master %s\n",wk.Address)
+	err = client.Call("Master.RegisterWorker",&wk, nil)
+
+	if err != nil {
+		log.Fatal(err)
+	}	
+}
+
+func SpawnWorker(spawnChannel chan int ,jobType string) {
+	var done sync.WaitGroup
+	fmt.Printf("Waiting on mapper channel\n")
+	for n := range spawnChannel {
+		fmt.Printf("Receiving on mapper channel\n")
+		for i := 0; i < n; i++ {
+			done.Add(1)
+			fmt.Printf("Spawning a new mapper..\n")
+			go func() {
+				CreateNewWorker(jobType)
+				done.Done()
+			}()
+		}
+
+		done.Wait()
+	}
+	return
+}
+
+func CreateNewWorker(workerType string) {
+	wk := new(WorkerConfig)
+	// wk.dataChan = make(chan KeyValue)
+	wk.Address = generateAddress()
+	wk.WorkerType = workerType
+
+	// StartWorkerRPCServer(wk)
+	wk.RegisterWithMaster()
+}
+
+
+func (wk *WorkerConfig) SpawnNewWorker(workerType string, dataChunck *KeyValue) error {
+	new_wk := new(WorkerConfig)
+	new_wk.DataChunck = KeyValue{dataChunck.Key,dataChunck.Value}
+
+	new_wk.Address = generateAddress()
+	new_wk.WorkerType = workerType
+
+	// StartWorkerRPCServer(wk)
+	// wk.RegisterWithMaster()
+
+	fmt.Print("\nNew Worker Create and Registered \n")
+
+	return nil
+}
+// func (wk *WorkerConfig) PerformJob(dataChunck *KeyValue) {
+// 	fmt.Print("\nInitating the job...\n")
+// 	switch wk.workerType {
+// 	case Mapper:
+// 		// performMapperJob()
+// 		fmt.Println("Mapper Job Assigned")
+// 	case Reducer:
+// 		// performReducerJob()
+// 		fmt.Println("Reducer Job Assigned")
+// 	default:
+// 		fmt.Print("\n*******\nUnidentified Job Type Assigned\n*******\n")
+// 	}
+// }
+
+
+func generateAddress() string {
+	name := string("some_address")
+	return name
 }

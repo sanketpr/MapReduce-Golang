@@ -7,6 +7,7 @@ import "os"
 import "net/rpc"
 import "net/http"
 import "io/ioutil"
+import "sync"
 
 
 type WorkerInfo struct {
@@ -16,17 +17,25 @@ type WorkerInfo struct {
 var Files []string
 
 type MRData struct {
-	mapperInput map[string]string
-	// intermData map[string] int
-	// reducerOutput map[string] int
+	MapperInput map[string]string
+	IntermData map[string] int
+	ReducerOutput map[string] int
+	
 }
 
 type Master struct {
-	listener net.Listener
-	isAlive bool
-	workers map[string] *WorkerInfo
+	// sync.Mutex
+	mux sync.Mutex
+
+	workerEndPoint string
+	workers []string
+	// workers [] chan KeyValue
 	address string
-	mapperChannel chan KeyValue
+	newWorkerBroadcast *sync.Cond
+	spawnWKChan chan bool
+	doneChannel chan bool
+	shutdown chan bool
+	input_files []string
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -39,6 +48,14 @@ type Reply struct {
 }
 
 
+// func (mr *Master) Register(args *RegArgs, _ *struct{}) error {
+// 	mr.Lock()
+// 	defer mr.Unlock()
+// 	mr.workers = append(mr.workers, args.Worker)
+// 	mr.newWorkerBroadcast.Broadcast()
+
+// 	return nil
+// }
 
 //
 // an example RPC handler.
@@ -85,7 +102,28 @@ func rpcServer() {
 	rpc.Accept(inbound)
 }
 
-func (l *Listener) GetLine(line string, reply *Reply) error {
+func startRPCServer(mr *Master) {
+	fmt.Print("\nStarting Master Server...\n")
+	address, err := net.ResolveTCPAddr("tcp", "0.0.0.0:12345")
+
+	if err != nil {
+		fmt.Print("**XX**")
+		log.Fatal(err)
+	}
+
+	inbound, err := net.ListenTCP("tcp", address)
+
+	if err != nil {
+		fmt.Print("**XX**")
+		log.Fatal(err)
+	}
+
+	rpc.Register(mr)
+	rpc.Accept(inbound)	
+	fmt.Printf("\nNow Accepting Connections...\n")
+}
+
+func (l *Listener) GetLine(line string, job *Job) error {
 	mapperInput := make(map[string]string)
 	
 	for _, filename := range Files {
@@ -101,28 +139,33 @@ func (l *Listener) GetLine(line string, reply *Reply) error {
 		mapperInput[filename] = string(content)
 	}
 
-	*reply = Reply{mapperInput}
+	job.NMappers = 10
 
 	return nil
 }
 
-func (l *Listener) GetData(line string, mrData *MRData) error {
-	// mrData = new(MRData)
-	mapperInput := make(map[string]string)
-	for _, filename := range Files {
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
-		mapperInput[filename] = string(content)
-	}
+// func (mr *Master) Register(args *RegArgs, _ *struct{}) error {
+// 	mr.Lock()
+// 	defer mr.Unlock()
+// 	mr.workers = append(mr.workers, args.Worker)
+// 	mr.newWorkerBroadcast.Broadcast()
 
-	*mrData = MRData{mapperInput}
+// 	return nil
+// }
+
+func (mr *Master) EstConnection(msg string, job *Job) error {
+	fmt.Print("\nReceived Spawing Channel\n")
+
+	job.NMappers = 10;
+	fmt.Printf("\nReceived worker message: %s\n",msg)
+	return nil
+}
+
+func (mr *Master) RegisterWorker(wk* WorkerConfig, mrData *MRData) error {
+	mr.mux.Lock()
+	mr.workers = append(mr.workers, wk.Address)
+	fmt.Printf("\nRegistering new worker with address: %s", wk.Address)
+	mr.mux.Unlock()
 
 	return nil
 }
@@ -140,18 +183,54 @@ func (m *Master) Done() bool {
 	return ret
 }
 
-func distributeMapJob(file_contents map[int]string) {
-	fmt.Print("Distribution Center\n")
+func (mr *Master)distributeMapJob(workerAddress string, dataChunck *KeyValue) {
+	//_ := mr.spawnWKChan 
+	fmt.Print("\nDistributing Work to Workers\n")
+	client, err := rpc.Dial("tcp", workerAddress)
+	if err != nil {
+	  log.Fatal(err)
+	}
+
+	msg := Mapper
+	
+	
+	err = client.Call("WorkerConfig.SpawnNewWorker", msg, dataChunck)
+
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 
-// func initaliseMaster() *Master {
-// 	m := new(Master)
-// 	m.address = ""
-// 	m.isAlive = true
+func (mr *Master) scheduleMappers() {
+	// <-mr.spawnWKChan 
+	// fmt.Print("\nDistributing Work to Workers\n")
+	// client, err := rpc.Dial("tcp", mr.workerEndPoint)
+	// if err != nil {
+	//   log.Fatal(err)
+	// }
 
-// 	return &m
-// }
+	// msg := Mapper
+	
+	
+	// err = client.Call("WorkerConfig.SpawnNewWorker", msg, dataChunck)
+
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	fmt.Printf("\nDistributed Jobs...\n")
+}
+
+
+func initaliseMaster(master string) *Master {
+	m := new(Master)
+	m.address = master
+	// m.newWorkerBroadcast = sync.NewCond(m)
+	m.doneChannel = make(chan bool)
+	m.spawnWKChan = make(chan bool)
+	// m.mapperChannel = make(chan KeyValue)
+	return m
+}
 
 //
 // create a Master.
@@ -159,9 +238,15 @@ func distributeMapJob(file_contents map[int]string) {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeMaster(files []string, nReduce int) *Master {
-	m := Master{}
-	m.mapperChannel = make(chan KeyValue)
+	add := masterSock()
+	m := initaliseMaster(add)
+	m.input_files = files
+	// m.mapperChannel = make(chan KeyValue)
 	Files = files
-	rpcServer()
-	return &m
+	// rpcServer()
+	
+
+	go startRPCServer(m)
+	// m.scheduleMappers()
+	return m
 }
