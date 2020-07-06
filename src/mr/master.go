@@ -28,7 +28,7 @@ type Master struct {
 	mux sync.Mutex
 
 	workerEndPoint string
-	workers []string
+	scheduledWorkers map[string]bool
 	// workers [] chan KeyValue
 	address string
 	newWorkerBroadcast *sync.Cond
@@ -46,16 +46,6 @@ type Listener int
 type Reply struct {
    Data map[string]string
 }
-
-
-// func (mr *Master) Register(args *RegArgs, _ *struct{}) error {
-// 	mr.Lock()
-// 	defer mr.Unlock()
-// 	mr.workers = append(mr.workers, args.Worker)
-// 	mr.newWorkerBroadcast.Broadcast()
-
-// 	return nil
-// }
 
 //
 // an example RPC handler.
@@ -144,27 +134,19 @@ func (l *Listener) GetLine(line string, job *Job) error {
 	return nil
 }
 
-// func (mr *Master) Register(args *RegArgs, _ *struct{}) error {
-// 	mr.Lock()
-// 	defer mr.Unlock()
-// 	mr.workers = append(mr.workers, args.Worker)
-// 	mr.newWorkerBroadcast.Broadcast()
-
-// 	return nil
-// }
-
 func (mr *Master) EstConnection(msg string, job *Job) error {
-	fmt.Print("\nReceived Spawing Channel\n")
+	fmt.Print("Received Spawing Channel\n")
 
 	job.NMappers = 10;
-	fmt.Printf("\nReceived worker message: %s\n",msg)
 	return nil
 }
 
 func (mr *Master) RegisterWorker(wk* WorkerConfig, mrData *MRData) error {
 	mr.mux.Lock()
-	mr.workers = append(mr.workers, wk.Address)
-	fmt.Printf("\nRegistering new worker with address: %s", wk.Address)
+	mr.scheduledWorkers[wk.Address] = false
+	wk.scheduled = true
+	wk.completedJob = false
+	fmt.Printf("\nRegistering new worker @: %s", wk.Address)
 	mr.mux.Unlock()
 
 	return nil
@@ -185,7 +167,7 @@ func (m *Master) Done() bool {
 
 func (mr *Master)distributeMapJob(workerAddress string, dataChunck *KeyValue) {
 	//_ := mr.spawnWKChan 
-	fmt.Print("\nDistributing Work to Workers\n")
+	fmt.Print("Distributing Work to Workers\n")
 	client, err := rpc.Dial("tcp", workerAddress)
 	if err != nil {
 	  log.Fatal(err)
@@ -202,23 +184,11 @@ func (mr *Master)distributeMapJob(workerAddress string, dataChunck *KeyValue) {
 }
 
 
-func (mr *Master) scheduleMappers() {
-	// <-mr.spawnWKChan 
-	// fmt.Print("\nDistributing Work to Workers\n")
-	// client, err := rpc.Dial("tcp", mr.workerEndPoint)
-	// if err != nil {
-	//   log.Fatal(err)
-	// }
-
-	// msg := Mapper
-	
-	
-	// err = client.Call("WorkerConfig.SpawnNewWorker", msg, dataChunck)
-
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
+func (mr *Master) scheduleMappers(returnChan chan bool) {
 	fmt.Printf("\nDistributed Jobs...\n")
+
+	fmt.Printf("Done Distributing...\n")
+	returnChan <- true
 }
 
 
@@ -241,12 +211,17 @@ func MakeMaster(files []string, nReduce int) *Master {
 	add := masterSock()
 	m := initaliseMaster(add)
 	m.input_files = files
+	m.scheduledWorkers = make(map[string]bool)
 	// m.mapperChannel = make(chan KeyValue)
 	Files = files
 	// rpcServer()
 	
 
 	go startRPCServer(m)
-	// m.scheduleMappers()
+	
+	returnChan := make(chan bool)
+	go m.scheduleMappers(returnChan)
+
+	<- returnChan
 	return m
 }
