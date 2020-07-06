@@ -8,15 +8,14 @@ import "net/rpc"
 import "net/http"
 import "io/ioutil"
 import "sync"
-
-
-type WorkerInfo struct {
-	address string
-}
+import "time"
 
 var Files []string
 
 type MRData struct {
+	mux sync.Mutex
+	mapInput KeyValue
+	reduceInput []KeyValue
 	MapperInput map[string]string
 	IntermData map[string] int
 	ReducerOutput map[string] int
@@ -24,18 +23,19 @@ type MRData struct {
 }
 
 type Master struct {
-	// sync.Mutex
 	mux sync.Mutex
 
 	workerEndPoint string
-	scheduledWorkers map[string]bool
-	// workers [] chan KeyValue
+	scheduledMappers map[string]bool
+
 	address string
 	newWorkerBroadcast *sync.Cond
 	spawnWKChan chan bool
 	doneChannel chan bool
 	shutdown chan bool
 	input_files []string
+	nMappers int
+	nReducers int
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -93,24 +93,22 @@ func rpcServer() {
 }
 
 func startRPCServer(mr *Master) {
-	fmt.Print("\nStarting Master Server...\n")
+	fmt.Print("Starting Master Server...\n")
 	address, err := net.ResolveTCPAddr("tcp", "0.0.0.0:12345")
 
 	if err != nil {
-		fmt.Print("**XX**")
 		log.Fatal(err)
 	}
 
 	inbound, err := net.ListenTCP("tcp", address)
 
 	if err != nil {
-		fmt.Print("**XX**")
 		log.Fatal(err)
 	}
 
 	rpc.Register(mr)
 	rpc.Accept(inbound)	
-	fmt.Printf("\nNow Accepting Connections...\n")
+	fmt.Printf("Now Accepting Connections...\n")
 }
 
 func (l *Listener) GetLine(line string, job *Job) error {
@@ -136,17 +134,16 @@ func (l *Listener) GetLine(line string, job *Job) error {
 
 func (mr *Master) EstConnection(msg string, job *Job) error {
 	fmt.Print("Received Spawing Channel\n")
-
-	job.NMappers = 10;
+	job.NMappers = mr.nMappers;
 	return nil
 }
 
 func (mr *Master) RegisterWorker(wk* WorkerConfig, mrData *MRData) error {
 	mr.mux.Lock()
-	mr.scheduledWorkers[wk.Address] = false
+	mr.scheduledMappers[wk.Address] = false
 	wk.scheduled = true
 	wk.completedJob = false
-	fmt.Printf("\nRegistering new worker @: %s", wk.Address)
+	fmt.Printf("Registering new worker @: %s\n", wk.Address)
 	mr.mux.Unlock()
 
 	return nil
@@ -165,40 +162,53 @@ func (m *Master) Done() bool {
 	return ret
 }
 
-func (mr *Master)distributeMapJob(workerAddress string, dataChunck *KeyValue) {
+func distributeMapJob(workerAddress string, mrData *MRData) {
 	//_ := mr.spawnWKChan 
-	fmt.Print("Distributing Work to Workers\n")
+	fmt.Print("Distributing jobs to mappers..\n")
 	client, err := rpc.Dial("tcp", workerAddress)
 	if err != nil {
 	  log.Fatal(err)
 	}
 
-	msg := Mapper
-	
-	
-	err = client.Call("WorkerConfig.SpawnNewWorker", msg, dataChunck)
+	_ = Mapper
+	err = client.Call("Job.MapJob", Mapper, &mrData)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-
 func (mr *Master) scheduleMappers(returnChan chan bool) {
-	fmt.Printf("\nDistributed Jobs...\n")
+	fmt.Printf("Waiting for mappers to register...\n")
 
-	fmt.Printf("Done Distributing...\n")
+	numOfWorkDone := 0
+
+	for numOfWorkDone < mr.nMappers {
+		time.Sleep(time.Second)
+		numOfWorkDone = len(mr.scheduledMappers)
+	}
+
+	fmt.Printf("\nAll mappers registerd! \nStaring distribution process...\n")
+
+	for address,_ := range mr.scheduledMappers {
+		mrd := new(MRData)
+		distributeMapJob(address,mrd)
+	}
+
 	returnChan <- true
 }
-
 
 func initaliseMaster(master string) *Master {
 	m := new(Master)
 	m.address = master
-	// m.newWorkerBroadcast = sync.NewCond(m)
 	m.doneChannel = make(chan bool)
 	m.spawnWKChan = make(chan bool)
-	// m.mapperChannel = make(chan KeyValue)
+	m.scheduledMappers = make(map[string]bool)
+
+	// TODO: add a way to set number of mappers required
+	// for the job based on the given input files
+	m.nMappers = 10
+
 	return m
 }
 
@@ -211,11 +221,9 @@ func MakeMaster(files []string, nReduce int) *Master {
 	add := masterSock()
 	m := initaliseMaster(add)
 	m.input_files = files
-	m.scheduledWorkers = make(map[string]bool)
-	// m.mapperChannel = make(chan KeyValue)
+	m.nReducers = nReduce
+
 	Files = files
-	// rpcServer()
-	
 
 	go startRPCServer(m)
 	
@@ -223,5 +231,6 @@ func MakeMaster(files []string, nReduce int) *Master {
 	go m.scheduleMappers(returnChan)
 
 	<- returnChan
+
 	return m
 }

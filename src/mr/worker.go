@@ -10,6 +10,7 @@ import "sync"
 import "net"
 import "math/rand"
 import "strconv"
+import "time"
 
 const(
 	Mapper = "Mapper"
@@ -37,6 +38,7 @@ type WorkerConfig struct {
 	DataChunck KeyValue
 	scheduled bool
 	completedJob bool
+	ready bool
 }
 
 type Job struct {
@@ -100,6 +102,21 @@ func mapOperation(mapf func(string, string) []KeyValue, c chan KeyValue) []KeyVa
 			done.Done()
 		}(keyVal)
 	}
+
+	done.Wait()
+	return kva
+}
+
+func mapOP(mapf func(string, string) []KeyValue, keyVal KeyValue) []KeyValue {
+	kva := make([]KeyValue,9)
+	var done sync.WaitGroup
+
+	done.Add(1)
+	go func(keyValue KeyValue) {
+		temp := mapf(keyVal.Key, keyVal.Value)
+		kva = append(kva,temp...)
+		done.Done()
+	}(keyVal)
 
 	done.Wait()
 	return kva
@@ -220,7 +237,7 @@ func SpawnMappers(spawnChannel chan int ,job *Job) {
 			done.Add(1)
 			fmt.Printf("Spawning a new Mapper\n")
 			go func() {
-				CreateNewWorker(job)
+				CreateNewWorker(job, Mapper)
 				done.Done()
 			}()
 		}
@@ -230,13 +247,14 @@ func SpawnMappers(spawnChannel chan int ,job *Job) {
 	return
 }
 
-func CreateNewWorker(job *Job) {
+func CreateNewWorker(job *Job, jobType string) {
 	wk := new(WorkerConfig)
 	// wk.dataChan = make(chan KeyValue)
 	wk.Address = generateAddress()
-	wk.WorkerType = job.JobType
+	wk.WorkerType = jobType
 
-	StartWorkerRPCServer(wk,job)
+	go StartWorkerRPCServer(wk,job)
+	time.Sleep(3*time.Second)
 	wk.registerWithMaster()
 }
 
@@ -277,8 +295,33 @@ func generateAddress() string {
 }
 
 /*
-RPC Implementation
----------------------------------------------------------------------------------------------------------------------
+RPC Methods
+--------------------------------------------------------------------------
+*/
+
+func (wk *WorkerConfig) Somefunc(msg string, job *Job) error {
+	return nil
+}
+
+func (job *Job) MapJob(WorkerType string, mrData* MRData) error {
+	switch WorkerType{
+	case Mapper:
+		// _ = mapOP(job.MapFunc,mrData.mapInput)
+		fmt.Print("\nMapJobMapJobMapJobMapJobMapJob\n")
+		return nil
+	case Reducer:
+		// _ = reduceOperation(job.RedFunc, mrData.reduceInput)
+		fmt.Print("\nReduceJobReduceJobReduceJobReduceJob\n")
+		return nil
+	default:
+		fmt.Print("Undefined worker job type\n")
+	}
+	return nil
+}
+
+/*
+RPC Network Implementation
+--------------------------------------------------------------------------
 */
 
 func StartRPCClient(spawnChannel chan int, job *Job) {
@@ -301,12 +344,8 @@ func StartRPCClient(spawnChannel chan int, job *Job) {
 	close(spawnChannel)
 }
 
-func (wk *WorkerConfig) Somefunc(msg string, job *Job) error {
-	return nil
-} 
-
 func StartWorkerRPCServer(wk *WorkerConfig, job *Job) {
-	fmt.Print("Starting Worker Server...\n")
+	fmt.Printf("Starting Worker Server @%s...\n",wk.Address)
 	address, err := net.ResolveTCPAddr("tcp", wk.Address)
 
 	if err != nil {
@@ -319,9 +358,11 @@ func StartWorkerRPCServer(wk *WorkerConfig, job *Job) {
 	 log.Fatal(err)
 	}
 
-	// rpc.Register(job)
+	rpc.Register(job)
 	rpc.Register(wk)
-	go func() {
+	// go func(inbound *net.TCPListener, wk *WorkerConfig) {
+		wk.ready = true
 		rpc.Accept(inbound)
-	}()
+
+	// }(inbound, wk)
 }
