@@ -13,27 +13,26 @@ import "time"
 var Files []string
 
 type MRData struct {
-	mux sync.Mutex
-	mapInput KeyValue
-	reduceInput []KeyValue
-	MapperInput map[string]string
-	IntermData map[string] int
-	ReducerOutput map[string] int
-	
+	// mux sync.Mutex
+	MapperInput KeyValue
+	MapperOutput []KeyValue
+	WorkerType string
+	// ReducerOutput map[string] int
 }
 
 type Master struct {
 	mux sync.Mutex
+	WorkerEndPoint string
+	scheduledMappers map[string] *WorkerConfig
 
-	workerEndPoint string
-	scheduledMappers map[string]bool
+	mapperData map[string]string
+	mapperOutput []KeyValue
 
 	address string
-	newWorkerBroadcast *sync.Cond
 	spawnWKChan chan bool
 	doneChannel chan bool
 	shutdown chan bool
-	input_files []string
+
 	nMappers int
 	nReducers int
 }
@@ -52,8 +51,7 @@ type Reply struct {
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+func (m *Master) Example(msg string, reply *MRData) error {
 	return nil
 }
 
@@ -140,7 +138,7 @@ func (mr *Master) EstConnection(msg string, job *Job) error {
 
 func (mr *Master) RegisterWorker(wk* WorkerConfig, mrData *MRData) error {
 	mr.mux.Lock()
-	mr.scheduledMappers[wk.Address] = false
+	mr.scheduledMappers[wk.Address] = wk
 	wk.scheduled = true
 	wk.completedJob = false
 	fmt.Printf("Registering new worker @: %s\n", wk.Address)
@@ -162,22 +160,6 @@ func (m *Master) Done() bool {
 	return ret
 }
 
-func distributeMapJob(workerAddress string, mrData *MRData) {
-	//_ := mr.spawnWKChan 
-	fmt.Print("Distributing jobs to mappers..\n")
-	client, err := rpc.Dial("tcp", workerAddress)
-	if err != nil {
-	  log.Fatal(err)
-	}
-
-	_ = Mapper
-	err = client.Call("Job.MapJob", Mapper, &mrData)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
 func (mr *Master) scheduleMappers(returnChan chan bool) {
 	fmt.Printf("Waiting for mappers to register...\n")
 
@@ -190,26 +172,72 @@ func (mr *Master) scheduleMappers(returnChan chan bool) {
 
 	fmt.Printf("\nAll mappers registerd! \nStaring distribution process...\n")
 
-	for address,_ := range mr.scheduledMappers {
-		mrd := new(MRData)
-		distributeMapJob(address,mrd)
+	var mapperDataArr []*MRData 
+
+	for k,v := range mr.mapperData {
+		mapData := new(MRData)
+		kva := KeyValue{k,v}
+		mapData.MapperInput = kva
+		mapData.WorkerType = Mapper
+		mapperDataArr = append(mapperDataArr, mapData)
 	}
 
+	i := 0
+	for address,_ := range mr.scheduledMappers {
+		// mrd := new(MRData)
+
+		go func(i int) {
+			distributeMapJob(address,mapperDataArr[i])
+			fmt.Printf("\n\n*%d*\n\n",len(mapperDataArr[i].MapperOutput))
+		}(i)
+		i++
+	}
 	returnChan <- true
 }
 
-func initaliseMaster(master string) *Master {
+func distributeMapJob(workerAddress string, mrData *MRData) {
+	//_ := mr.spawnWKChan 
+	fmt.Print("Distributing jobs to mappers..\n")
+	client, err := rpc.Dial("tcp", workerAddress)
+	if err != nil {
+	  log.Fatal(err)
+	}
+
+	// var kva KeyValue
+	err = client.Call("Job.MapJob", &mrData, &mrData)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func initaliseMaster(master string, files[] string, nReduce int) *Master {
 	m := new(Master)
 	m.address = master
-	m.doneChannel = make(chan bool)
-	m.spawnWKChan = make(chan bool)
-	m.scheduledMappers = make(map[string]bool)
-
-	// TODO: add a way to set number of mappers required
-	// for the job based on the given input files
-	m.nMappers = 10
-
+	// m.doneChannel = make(chan bool)
+	// m.spawnWKChan = make(chan bool)
+	m.scheduledMappers = make(map[string] *WorkerConfig)
+	m.nReducers = nReduce
+	m.setData(files)
 	return m
+}
+
+func (mr *Master) setData(files []string) {
+	mr.mapperData = make(map[string]string)
+	for _, filename := range files {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		mr.mapperData[filename] = string(content)
+	}
+
+	mr.nMappers = len(mr.mapperData)
 }
 
 //
@@ -219,11 +247,8 @@ func initaliseMaster(master string) *Master {
 //
 func MakeMaster(files []string, nReduce int) *Master {
 	add := masterSock()
-	m := initaliseMaster(add)
-	m.input_files = files
-	m.nReducers = nReduce
-
-	Files = files
+	m := initaliseMaster(add, files, nReduce)
+	// Files = files
 
 	go startRPCServer(m)
 	

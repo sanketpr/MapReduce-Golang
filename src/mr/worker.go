@@ -10,7 +10,7 @@ import "sync"
 import "net"
 import "math/rand"
 import "strconv"
-import "time"
+// import "time"
 
 const(
 	Mapper = "Mapper"
@@ -109,16 +109,8 @@ func mapOperation(mapf func(string, string) []KeyValue, c chan KeyValue) []KeyVa
 
 func mapOP(mapf func(string, string) []KeyValue, keyVal KeyValue) []KeyValue {
 	kva := make([]KeyValue,9)
-	var done sync.WaitGroup
-
-	done.Add(1)
-	go func(keyValue KeyValue) {
-		temp := mapf(keyVal.Key, keyVal.Value)
-		kva = append(kva,temp...)
-		done.Done()
-	}(keyVal)
-
-	done.Wait()
+	temp := mapf(keyVal.Key, keyVal.Value)
+	kva = append(kva,temp...)
 	return kva
 }
 
@@ -249,13 +241,22 @@ func SpawnMappers(spawnChannel chan int ,job *Job) {
 
 func CreateNewWorker(job *Job, jobType string) {
 	wk := new(WorkerConfig)
-	// wk.dataChan = make(chan KeyValue)
 	wk.Address = generateAddress()
 	wk.WorkerType = jobType
 
-	go StartWorkerRPCServer(wk,job)
-	time.Sleep(3*time.Second)
-	wk.registerWithMaster()
+	go func() {
+		/*
+		TODO: Remove the time delay
+		creatiStartWorkerRPCServerng a small delay so that the new mapper gets
+		enought time to start the rpc server before regestering
+		with master and accepting rpc requests
+		*/
+		// time.Sleep(time.Second)
+		wk.registerWithMaster()
+	}()
+
+	StartWorkerRPCServer(wk,job)
+	fmt.Printf("\n*********\n")
 }
 
 func (wk *WorkerConfig) registerWithMaster() {
@@ -303,11 +304,12 @@ func (wk *WorkerConfig) Somefunc(msg string, job *Job) error {
 	return nil
 }
 
-func (job *Job) MapJob(WorkerType string, mrData* MRData) error {
-	switch WorkerType{
+func (job *Job) MapJob(mrData* MRData, mrOutput* MRData) error {
+	switch mrData.WorkerType{
 	case Mapper:
-		// _ = mapOP(job.MapFunc,mrData.mapInput)
-		fmt.Print("\nMapJobMapJobMapJobMapJobMapJob\n")
+		fmt.Printf("\n%s\n",mrData.MapperInput.Key)
+		map_out := mapOP(job.MapFunc,mrData.MapperInput)
+		mrOutput.MapperOutput = map_out
 		return nil
 	case Reducer:
 		// _ = reduceOperation(job.RedFunc, mrData.reduceInput)
