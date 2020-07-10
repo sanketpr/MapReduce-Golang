@@ -10,7 +10,7 @@ import "sync"
 import "net"
 import "math/rand"
 import "strconv"
-// import "time"
+import "time"
 
 const(
 	Mapper = "Mapper"
@@ -169,8 +169,11 @@ func Worker(mapf func(string, string) []KeyValue,
 
 
 		spawnChannel := make(chan int)
+		somechan := make(chan bool)
+		go StartRPCClient(spawnChannel, somechan, job)
 
-		go StartRPCClient(spawnChannel, job)
+		time.Sleep(10*time.Millisecond)
+		go SpawnReducers(somechan, job)
 		SpawnMappers(spawnChannel, job)
 }
 
@@ -222,12 +225,10 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 func SpawnMappers(spawnChannel chan int ,job *Job) {
 	var done sync.WaitGroup
-	fmt.Printf("Waiting on mapper channel\n")
 	for n := range spawnChannel {
-		fmt.Printf("Receiving on mapper channel\n")
+		fmt.Printf("\n> Spawning Mappers\n")
 		for i := 0; i < n; i++ {
 			done.Add(1)
-			fmt.Printf("Spawning a new Mapper\n")
 			go func() {
 				CreateNewWorker(job, Mapper)
 				done.Done()
@@ -237,6 +238,21 @@ func SpawnMappers(spawnChannel chan int ,job *Job) {
 		done.Wait()
 	}
 	return
+}
+
+func SpawnReducers(somechan chan bool, job *Job) {
+	var done sync.WaitGroup
+	for _ = range somechan {
+		for i := 0; i < job.NReducers; i++ {
+			done.Add(1)
+			go func() {
+				CreateNewWorker(job, Reducer)
+				done.Done()
+			}()
+		}
+
+		done.Wait()
+	}
 }
 
 func CreateNewWorker(job *Job, jobType string) {
@@ -252,21 +268,25 @@ func CreateNewWorker(job *Job, jobType string) {
 		with master and accepting rpc requests
 		*/
 		// time.Sleep(time.Second)
-		wk.registerWithMaster()
+		wk.registerWithMaster(jobType)
 	}()
 
 	StartWorkerRPCServer(wk,job)
-	fmt.Printf("\n*********\n")
 }
 
-func (wk *WorkerConfig) registerWithMaster() {
+func (wk *WorkerConfig) registerWithMaster(jobType string) {
 	client, err := rpc.Dial("tcp", "localhost:12345")
 	if err != nil {
 	  log.Fatal(err)
 	}
 
 	fmt.Printf("Registering with master %s\n",wk.Address)
-	err = client.Call("Master.RegisterWorker",&wk, nil)
+	
+	if (jobType == Mapper) {
+		err = client.Call("Master.RegisterWorker",&wk, nil)
+	} else {
+		err = client.Call("Master.RegisterReducer",&wk, nil)
+	}
 
 	if err != nil {
 		log.Fatal(err)
@@ -307,17 +327,23 @@ func (wk *WorkerConfig) Somefunc(msg string, job *Job) error {
 func (job *Job) MapJob(mrData* MRData, mrOutput* MRData) error {
 	switch mrData.WorkerType{
 	case Mapper:
-		fmt.Printf("\n%s\n",mrData.MapperInput.Key)
+		fmt.Printf("\nInitating Mapper Job...")
 		map_out := mapOP(job.MapFunc,mrData.MapperInput)
 		mrOutput.MapperOutput = map_out
 		return nil
 	case Reducer:
-		// _ = reduceOperation(job.RedFunc, mrData.reduceInput)
-		fmt.Print("\nReduceJobReduceJobReduceJobReduceJob\n")
+		// reduce_out := reduceOperation(job.RedFunc, mrData.reduceInput)
+		fmt.Print("\nReduceJob\n")
 		return nil
 	default:
 		fmt.Print("Undefined worker job type\n")
 	}
+	return nil
+}
+
+func (job *Job) ReduceJob(reduceData *ReducerData, reduceResult *ReducerData) error {
+	fmt.Print("\nInitating Reduce Job...")
+	reduceResult.Output = reduceOperation(job.RedFunc, reduceData.Input)
 	return nil
 }
 
@@ -326,8 +352,8 @@ RPC Network Implementation
 --------------------------------------------------------------------------
 */
 
-func StartRPCClient(spawnChannel chan int, job *Job) {
-	fmt.Print("\nInitating connection with master\n")
+func StartRPCClient(spawnChannel chan int, somechan chan bool,job *Job) {
+	fmt.Print("\n> Initating connection with master")
 	client, err := rpc.Dial("tcp", "0.0.0.0:12345")
 	if err != nil {
 	  log.Fatal(err)
@@ -341,9 +367,11 @@ func StartRPCClient(spawnChannel chan int, job *Job) {
 		log.Fatal(err)
 	}
 
-	fmt.Printf("\nPusblising on mapper spawn channel\n")
+	fmt.Printf("\n> Pusblising on mapper spawn channel")
 	spawnChannel <- job.NMappers
+	somechan <- true
 	close(spawnChannel)
+	close(somechan)
 }
 
 func StartWorkerRPCServer(wk *WorkerConfig, job *Job) {
@@ -360,7 +388,10 @@ func StartWorkerRPCServer(wk *WorkerConfig, job *Job) {
 	 log.Fatal(err)
 	}
 
-	rpc.Register(job)
+	if(job != nil) {
+		rpc.Register(job)
+	}
+
 	rpc.Register(wk)
 	// go func(inbound *net.TCPListener, wk *WorkerConfig) {
 		wk.ready = true

@@ -9,6 +9,7 @@ import "net/http"
 import "io/ioutil"
 import "sync"
 import "time"
+import "sort"
 
 var Files []string
 
@@ -20,10 +21,16 @@ type MRData struct {
 	// ReducerOutput map[string] int
 }
 
+type ReducerData struct {
+	Input []KeyValue
+	Output []KeyValue
+}
+
 type Master struct {
 	mux sync.Mutex
 	WorkerEndPoint string
 	scheduledMappers map[string] *WorkerConfig
+	scheduledReduers map[string] *WorkerConfig
 
 	mapperData map[string]string
 	mapperOutput []KeyValue
@@ -131,8 +138,8 @@ func (l *Listener) GetLine(line string, job *Job) error {
 }
 
 func (mr *Master) EstConnection(msg string, job *Job) error {
-	fmt.Print("Received Spawing Channel\n")
 	job.NMappers = mr.nMappers;
+	job.NReducers = mr.nReducers;
 	return nil
 }
 
@@ -141,8 +148,20 @@ func (mr *Master) RegisterWorker(wk* WorkerConfig, mrData *MRData) error {
 	mr.scheduledMappers[wk.Address] = wk
 	wk.scheduled = true
 	wk.completedJob = false
-	fmt.Printf("Registering new worker @: %s\n", wk.Address)
+	fmt.Printf("Mapper @%s registered\n", wk.Address)
 	mr.mux.Unlock()
+
+	return nil
+}
+
+func (mr *Master) RegisterReducer(wk* WorkerConfig, mrData *MRData) error {
+	mr.mux.Lock()
+	mr.scheduledReduers[wk.Address] = wk
+	wk.scheduled = true
+	wk.completedJob = false
+	mr.mux.Unlock()
+
+	fmt.Printf("Reducer @%s registered\n", wk.Address)
 
 	return nil
 }
@@ -160,9 +179,7 @@ func (m *Master) Done() bool {
 	return ret
 }
 
-func (mr *Master) scheduleMappers(returnChan chan bool) {
-	fmt.Printf("Waiting for mappers to register...\n")
-
+func (mr *Master) scheduleMappers(mapperDataArr []*MRData) []KeyValue {
 	numOfWorkDone := 0
 
 	for numOfWorkDone < mr.nMappers {
@@ -170,9 +187,7 @@ func (mr *Master) scheduleMappers(returnChan chan bool) {
 		numOfWorkDone = len(mr.scheduledMappers)
 	}
 
-	fmt.Printf("\nAll mappers registerd! \nStaring distribution process...\n")
-
-	var mapperDataArr []*MRData 
+	fmt.Print("\nStaring Mapper Phase...\n***********************")
 
 	for k,v := range mr.mapperData {
 		mapData := new(MRData)
@@ -183,21 +198,26 @@ func (mr *Master) scheduleMappers(returnChan chan bool) {
 	}
 
 	i := 0
-	for address,_ := range mr.scheduledMappers {
-		// mrd := new(MRData)
 
+	var done sync.WaitGroup
+	for address,_ := range mr.scheduledMappers {
+		// mrd := new(mrData)
+		done.Add(1)
 		go func(i int) {
 			distributeMapJob(address,mapperDataArr[i])
-			fmt.Printf("\n\n*%d*\n\n",len(mapperDataArr[i].MapperOutput))
+			done.Done()
 		}(i)
 		i++
 	}
-	returnChan <- true
+
+	done.Wait()
+
+	return collectAndSort(mapperDataArr)
 }
 
 func distributeMapJob(workerAddress string, mrData *MRData) {
 	//_ := mr.spawnWKChan 
-	fmt.Print("Distributing jobs to mappers..\n")
+	fmt.Printf("\nAssigning Map Job to %s",workerAddress)
 	client, err := rpc.Dial("tcp", workerAddress)
 	if err != nil {
 	  log.Fatal(err)
@@ -209,14 +229,47 @@ func distributeMapJob(workerAddress string, mrData *MRData) {
 	if err != nil {
 		log.Fatal(err)
 	}
+	fmt.Printf("\n@%s Complted Map Job",workerAddress)
+}
+
+func (mr *Master)scheduleReducePhase(buckets []ReducerData) {
+	i := 0
+	fmt.Print("\nStaring Reducer Phase...\n***********************")
+	var done sync.WaitGroup
+	for address,_ := range mr.scheduledReduers {
+		// mrd := new(mrData)
+		done.Add(1)
+		go func(i int) {
+			distributeReducerJob(address,&buckets[i])
+			done.Done()
+		}(i)
+		i++
+	}
+
+	done.Wait()
+}
+
+func distributeReducerJob(workerAddress string, reduceData *ReducerData) {
+	fmt.Printf("\nAssigning Reduce Job to %s",workerAddress)
+	client, err := rpc.Dial("tcp", workerAddress)
+	if err != nil {
+	  log.Fatal(err)
+	}
+
+	// var kva KeyValue
+	err = client.Call("Job.ReduceJob", &reduceData, &reduceData)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("\n@%s Completed Reduce Job",workerAddress)
 }
 
 func initaliseMaster(master string, files[] string, nReduce int) *Master {
 	m := new(Master)
 	m.address = master
-	// m.doneChannel = make(chan bool)
-	// m.spawnWKChan = make(chan bool)
 	m.scheduledMappers = make(map[string] *WorkerConfig)
+	m.scheduledReduers = make(map[string] *WorkerConfig)
 	m.nReducers = nReduce
 	m.setData(files)
 	return m
@@ -240,6 +293,38 @@ func (mr *Master) setData(files []string) {
 	mr.nMappers = len(mr.mapperData)
 }
 
+func collectAndSort(mapperDataArr []*MRData) [] KeyValue{
+	interm := []KeyValue{}
+	for _, mrd := range mapperDataArr {
+		interm = append(interm, mrd.MapperOutput...)
+	}
+
+	sort.Sort(ByKey(interm))
+
+	return interm
+}
+
+func makeReduceBuckets(intermData [] KeyValue, nBuckets int) []ReducerData {
+	buckets := []ReducerData{}
+	size := len(intermData)/nBuckets
+	index := 0
+	var rd ReducerData
+	for index < len(intermData) {
+		limit := index+size
+		for limit+1 < len(intermData) && intermData[limit].Key == intermData[limit+1].Key {
+			limit++
+		}
+		if (limit > len(intermData)) {
+			limit = len(intermData)
+		}
+		rd = ReducerData{Input: intermData[index:limit]}
+		buckets = append(buckets,rd)
+		index = limit
+	}
+
+	return buckets
+}
+
 //
 // create a Master.
 // main/mrmaster.go calls this function.
@@ -252,10 +337,17 @@ func MakeMaster(files []string, nReduce int) *Master {
 
 	go startRPCServer(m)
 	
-	returnChan := make(chan bool)
-	go m.scheduleMappers(returnChan)
+	// returnChan := make(chan bool)
+	var mapperDataArr []*MRData
 
-	<- returnChan
-
+	mapperOP := m.scheduleMappers(mapperDataArr)
+	fmt.Print("\n\nCollection and Sorting Phase...\n***********************\n")
+	reducerData := makeReduceBuckets(mapperOP, nReduce)
+	m.scheduleReducePhase(reducerData)
+	// for _,rd := range reducerData {
+	// 	for _,V := range rd.Output{
+	// 		fmt.Printf("\n%s %s",V.Key, V.Value)
+	// 	}
+	// }
 	return m
 }
