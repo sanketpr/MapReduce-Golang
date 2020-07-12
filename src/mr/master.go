@@ -5,7 +5,6 @@ import "log"
 import "net"
 import "os"
 import "net/rpc"
-import "net/http"
 import "io/ioutil"
 import "sync"
 import "time"
@@ -14,11 +13,9 @@ import "sort"
 var Files []string
 
 type MRData struct {
-	// mux sync.Mutex
 	MapperInput KeyValue
 	MapperOutput []KeyValue
 	WorkerType string
-	// ReducerOutput map[string] int
 }
 
 type ReducerData struct {
@@ -44,8 +41,6 @@ type Master struct {
 	nReducers int
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
 
 type Listener int
 
@@ -54,48 +49,8 @@ type Reply struct {
 }
 
 //
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (m *Master) Example(msg string, reply *MRData) error {
-	return nil
-}
-
-
-//
 // start a thread that listens for RPCs from worker.go
 //
-func (m *Master) server() {
-	rpc.Register(m)
-	rpc.HandleHTTP()
-	//l, e := net.Listen("tcp", ":1234")
-	sockname := masterSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
-	if e != nil {
-		log.Fatal("listen error:", e)
-	}
-	go http.Serve(l, nil)
-}
-
-func rpcServer() {
-	address, err := net.ResolveTCPAddr("tcp", "0.0.0.0:12345")
-
-	if err != nil {
-	 log.Fatal(err)
-	}
-
-	inbound, err := net.ListenTCP("tcp", address)
-
-	if err != nil {
-	 log.Fatal(err)
-	}
-
-	listener := new(Listener)
-	rpc.Register(listener)
-	rpc.Accept(inbound)
-}
 
 func startRPCServer(mr *Master) {
 	fmt.Print("Starting Master Server...\n")
@@ -114,27 +69,6 @@ func startRPCServer(mr *Master) {
 	rpc.Register(mr)
 	rpc.Accept(inbound)	
 	fmt.Printf("Now Accepting Connections...\n")
-}
-
-func (l *Listener) GetLine(line string, job *Job) error {
-	mapperInput := make(map[string]string)
-	
-	for _, filename := range Files {
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := ioutil.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
-		mapperInput[filename] = string(content)
-	}
-
-	job.NMappers = 10
-
-	return nil
 }
 
 func (mr *Master) EstConnection(msg string, job *Job) error {
@@ -172,9 +106,6 @@ func (mr *Master) RegisterReducer(wk* WorkerConfig, mrData *MRData) error {
 //
 func (m *Master) Done() bool {
 	ret := false
-
-	// Your code here.
-
 
 	return ret
 }
@@ -333,21 +264,22 @@ func makeReduceBuckets(intermData [] KeyValue, nBuckets int) []ReducerData {
 func MakeMaster(files []string, nReduce int) *Master {
 	add := masterSock()
 	m := initaliseMaster(add, files, nReduce)
-	// Files = files
 
 	go startRPCServer(m)
 	
-	// returnChan := make(chan bool)
 	var mapperDataArr []*MRData
 
 	mapperOP := m.scheduleMappers(mapperDataArr)
 	fmt.Print("\n\nCollection and Sorting Phase...\n***********************\n")
 	reducerData := makeReduceBuckets(mapperOP, nReduce)
 	m.scheduleReducePhase(reducerData)
-	// for _,rd := range reducerData {
-	// 	for _,V := range rd.Output{
-	// 		fmt.Printf("\n%s %s",V.Key, V.Value)
-	// 	}
-	// }
+
+	oname := "mr-out-0"
+	ofile, _ := os.Create(oname)
+	for _,rd := range reducerData {
+		for _,V := range rd.Output{
+			fmt.Fprintf(ofile, "%v %v\n", V.Key, V.Value)
+		}
+	}
 	return m
 }

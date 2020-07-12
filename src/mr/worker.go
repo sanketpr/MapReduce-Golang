@@ -67,29 +67,6 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
-func rpcClient(c chan KeyValue) {
-	client, err := rpc.Dial("tcp", "localhost:12345")
-	if err != nil {
-	  log.Fatal(err)
-	}
-
-	l := string("Test String")
-	
-	var mrData Reply
-	err = client.Call("Listener.GetLine", l, &mrData)
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for k, v := range mrData.Data {
-		c <- KeyValue{k,v}
-	}
-
-	close(c)
-}
-
 func mapOperation(mapf func(string, string) []KeyValue, c chan KeyValue) []KeyValue {
 	kva := make([]KeyValue,9)
 	var done sync.WaitGroup
@@ -175,52 +152,6 @@ func Worker(mapf func(string, string) []KeyValue,
 		time.Sleep(10*time.Millisecond)
 		go SpawnReducers(somechan, job)
 		SpawnMappers(spawnChannel, job)
-}
-
-//
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	call("Master.Example", &args, &reply)
-
-	// reply.Y should be 100.
-	fmt.Printf("reply.Y %v\n", reply.Y)
-}
-
-//
-// send an RPC request to the master, wait for the response.
-// usually returns true.
-// returns false if something goes wrong.
-//
-func call(rpcname string, args interface{}, reply interface{}) bool {
-	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
-	sockname := masterSock()
-	c, err := rpc.DialHTTP("unix", sockname)
-	if err != nil {
-		log.Fatal("dialing:", err)
-	}
-	defer c.Close()
-
-	err = c.Call(rpcname, args, reply)
-	if err == nil {
-		return true
-	}
-
-	fmt.Println(err)
-	return false
 }
 
 func SpawnMappers(spawnChannel chan int ,job *Job) {

@@ -9,11 +9,6 @@ package mr
 import "os"
 import "strconv"
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
 type ExampleArgs struct {
 	X int
 }
